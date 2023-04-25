@@ -31,9 +31,11 @@ add_custom_target(build-hyperonc ALL
         ${HYPERONC_LIB_PATH}
 
     COMMAND ${CMAKE_COMMAND} -E make_directory ${HYPERONC_INCLUDE_DIR}
-    COMMAND cbindgen
-        -c "${CMAKE_CURRENT_SOURCE_DIR}/cbindgen.toml"
-        -o ${HYPERONC_INCLUDE_DIR}/hyperon.h
+    #COMMAND cbindgen
+    #    -c "${CMAKE_CURRENT_SOURCE_DIR}/cbindgen.toml"
+    #    -o ${HYPERONC_INCLUDE_DIR}/hyperon.h
+    COMMAND cargo run --features headers --bin generate-headers --
+        -o "${HYPERONC_INCLUDE_DIR}/hyperon.h"
 
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 

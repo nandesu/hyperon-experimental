@@ -3,20 +3,6 @@
 
 #include "util.h"
 
-void return_string(char const* value, void* context) {
-    char** buffer = context;
-    size_t length = strlen(value);
-    *buffer = malloc(length + 1);
-    strncpy(*buffer, value, length);
-    (*buffer)[length] = 0;
-}
-
-char* stratom(atom_t const* atom) {
-    char* buffer;
-    atom_to_str(atom, return_string, &buffer);
-    return buffer;
-}
-
 #define MAXARGS 64
 
 atom_t* expr(atom_t* atom, ...) {

@@ -1,3 +1,7 @@
+
+#include <stdio.h>
+#include <stdlib.h>
+
 #include <hyperon/hyperon.h>
 
 #include "test.h"
@@ -10,31 +14,24 @@ void setup(void) {
 void teardown(void) {
 }
 
-#include "stdio.h"
-
-void print_str(const char *str, void *context) {
-    printf("%s", str);
-};
-
 void print_bindings(const bindings_t* bindings, void *context) {
-    bindings_to_str(bindings, &print_str, NULL);
+    char *bindings_string = bindings_to_str(bindings);
+    //printf("%s\n", bindings_string);
+    hyp_string_free(bindings_string);
 };
 
 START_TEST (test_bindings_set)
-{    
+{
     bindings_t* bindings_a = bindings_new();
-    var_atom_t var_atom_a = {.var = "a", .atom = atom_sym("A")};
-    bindings_add_var_binding(bindings_a, &var_atom_a);
+    bindings_add_var_binding(bindings_a, atom_var("a"), atom_sym("A"));
 
     bindings_t* bindings_b = bindings_new();
-    var_atom_t var_atom_b = {.var = "b", .atom = atom_sym("B")};
-    bindings_add_var_binding(bindings_b, &var_atom_b);
+    bindings_add_var_binding(bindings_b, atom_var("b"), atom_sym("B"));
 
-    bindings_set_t* set_1 = bindings_merge_v2(bindings_a, bindings_b);
+    bindings_set_t* set_1 = bindings_merge(bindings_a, bindings_b);
 
     bindings_t* bindings_c = bindings_new();
-    var_atom_t var_atom_c = {.var = "c", .atom = atom_sym("C")};
-    bindings_add_var_binding(bindings_c, &var_atom_c);
+    bindings_add_var_binding(bindings_c, atom_var("c"), atom_sym("C"));
 
     bindings_set_t* set_2 = bindings_set_from_bindings(bindings_c);
     bindings_set_t* result_set = bindings_set_merge(set_1, set_2);
@@ -60,27 +57,28 @@ START_TEST (test_sym)
     atom_t* atom = atom_sym(name);
     name[0] = 'r';
     
-    char* actual = stratom(atom);
+    char* actual = atom_to_str(atom);
     ck_assert_str_eq(actual, "test");
 
-    free(actual);
+    hyp_string_free(actual);
     atom_free(atom);
 }
 END_TEST
 
 START_TEST (test_expr)
 {
-    atom_t* atom = expr(atom_sym("test"), atom_var("var"), atom_sym("five"), atom_gnd(int_new(42)), 0);
+    atom_t* atom = expr(atom_sym("test"), atom_var("var"), atom_sym("five"), int_atom_new(42), 0);
 
-    char* actual = stratom(atom);
+    char* actual = atom_to_str(atom);
     ck_assert_str_eq(actual, "(test $var five 42)");
 
-    free(actual);
+    hyp_string_free(actual);
     atom_free(atom);
 }
 END_TEST
 
 void init_test(TCase* test_case) {
+    tcase_set_timeout(test_case, 300); //300s = 5min.  To test for memory leaks
     tcase_add_checked_fixture(test_case, setup, teardown);
     tcase_add_test(test_case, test_bindings_set);
     tcase_add_test(test_case, test_sym);

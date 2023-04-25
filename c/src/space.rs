@@ -1,74 +1,102 @@
-use hyperon::space::grounding::*;
-use hyperon::space::Space;
+use ::safer_ffi::prelude::*;
 
-use crate::atom::*;
-use crate::util::*;
+use hyperon::space::grounding::*;
+use hyperon::atom::*;
+use hyperon::space::Space;
+use hyperon::common::shared::Shared;
+
+use crate::atom::{atom, bindings_set, atoms_callback_t};
 
 use std::os::raw::*;
 
-// GroundingSpace
+//-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-
+// grounding_space_t Functions & Struct
+//-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-
 
-pub type grounding_space_t = SharedApi<GroundingSpace>;
-
-#[no_mangle]
-pub extern "C" fn grounding_space_new() -> *mut grounding_space_t {
-    grounding_space_t::new(GroundingSpace::new())
+#[ffi_export]
+#[derive_ReprC]
+#[ReprC::opaque]
+pub struct grounding_space {
+    pub(crate) space: Shared<GroundingSpace>,
 }
 
-#[no_mangle]
-pub extern "C" fn grounding_space_free(space: *mut grounding_space_t) {
-    grounding_space_t::drop(space)
+/// Returns a new grounding_space_t
+/// 
+/// The returned object must be freed with grounding_space_free()
+#[ffi_export]
+pub fn grounding_space_new() -> repr_c::Box<grounding_space> {
+    Box::new(grounding_space{space: Shared::new(GroundingSpace::new())}).into()
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn grounding_space_eq(a: *const grounding_space_t, b: *const grounding_space_t) -> bool {
-    *a == *b
+/// Frees a grounding_space_t
+#[ffi_export]
+pub fn grounding_space_free(space: repr_c::Box<grounding_space>) {
+    drop(space)
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn grounding_space_add(space: *mut grounding_space_t, atom: *mut atom_t) {
-    (*space).borrow_mut().add(ptr_into_atom(atom));
+/// Returns `true` if two spaces are equal.  <TODO: stub documentation>
+#[ffi_export]
+pub fn grounding_space_eq(a: &grounding_space, b: &grounding_space) -> bool {
+    a.space == b.space
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn grounding_space_remove(space: *mut grounding_space_t, atom: *const atom_t) -> bool {
-    (*space).borrow_mut().remove(&(*atom).atom)
+/// Adds the supplied atom to the supplied space
+/// 
+/// This function takes ownership of the supplied atom, so it should not subsequently be freed
+#[ffi_export]
+pub fn grounding_space_add(space: &mut grounding_space, atom: repr_c::Box<atom>) {
+    space.space.borrow_mut().add(atom.into().atom)
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn grounding_space_replace(space: *mut grounding_space_t, from: *const atom_t, to: *mut atom_t) -> bool {
-    (*space).borrow_mut().replace(&(*from).atom, ptr_into_atom(to))
+/// Removes the supplied atom from the space
+#[ffi_export]
+pub fn grounding_space_remove(space: &mut grounding_space, atom: &atom) -> bool {
+    space.space.borrow_mut().remove(&atom.atom)
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn grounding_space_len(space: *const grounding_space_t) -> usize {
-    (*space).borrow().iter().count()
+/// Replaces the `from` atom in the space with the `to` atom
+/// 
+/// This function takes ownership of the `to` atom, so it should not subsequently be freed
+/// However, this function does not take ownership of the `from` atom
+#[ffi_export]
+pub fn grounding_space_replace(space: &mut grounding_space, from: &atom, to: repr_c::Box<atom>) -> bool {
+    space.space.borrow_mut().replace(&from.atom, to.into().atom)
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn grounding_space_get(space: *const grounding_space_t, idx: usize) -> *mut atom_t {
+/// Returns the number of atoms in the supplied space
+#[ffi_export]
+pub fn grounding_space_len(space: &grounding_space) -> usize{
+    space.space.borrow().iter().count()
+}
+
+/// Returns a pointer to an atom at a specified index in the space
+/// 
+/// The returned atom pointer should NOT be freed.
+/// The returned atom pointer should NOT be accessed after the space has been freed
+#[ffi_export]
+pub fn grounding_space_get(space: &grounding_space, idx: usize) -> *const atom {
     // TODO: highly ineffective implementation, should be reworked after replacing
     // the GroundingSpace struct by Space trait in code.
-    atom_into_ptr((*space).borrow().iter().skip(idx).next()
-        .expect(format!("Index is out of bounds: {}", idx).as_str()).clone())
+    let space = space.space.borrow();
+    let atom = space.iter().skip(idx).next()
+        .expect(format!("Index is out of bounds: {}", idx).as_str());
+    (atom as *const Atom).cast()
 }
 
-#[no_mangle]
-pub extern "C" fn grounding_space_query(space: *const grounding_space_t,
-        pattern: *const atom_t, callback: lambda_t<* const bindings_t>, context: *mut c_void) {
-    let results = unsafe { (*space).borrow().query(&((*pattern).atom)) };
-    for result in results.into_iter() {
-        let b = bindings_into_ptr(result);
-        callback(b, context);
+/// Performs the `pattern` query within the space, and returns a bindings_set_t representing
+/// the query results.
+/// 
+/// The returned object must be freed with bindings_set_free()
+#[ffi_export]
+pub fn grounding_space_query(space: &grounding_space, pattern: &atom) -> repr_c::Box<bindings_set> {
+    Box::new(bindings_set{set: space.space.query(&pattern.atom)}).into()
+}
+
+/// Performs a substitution within the space <TODO: stub documentation>
+#[ffi_export]
+pub fn grounding_space_subst(space: &grounding_space, pattern: &atom, templ: &atom, callback: atoms_callback_t, context: *mut c_void) {
+    let result_atoms = space.space.subst(&pattern.atom, &templ.atom);
+    for atom in result_atoms {
+        callback((&atom as *const Atom).cast(), context);
     }
 }
-
-#[no_mangle]
-pub extern "C" fn grounding_space_subst(space: *const grounding_space_t,
-        pattern: *const atom_t, templ: *const atom_t,
-        callback: c_atoms_callback_t, context: *mut c_void) {
-    let results = unsafe { (*space).borrow().subst(&((*pattern).atom), &((*templ).atom)) };
-    return_atoms(&results, callback, context);
-}
-
-

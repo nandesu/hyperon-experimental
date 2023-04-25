@@ -17,17 +17,19 @@ START_TEST (test_tokenizer_parser)
     tokenizer_register_token(tokenizer, "\\d+", int_atom_from_str, empty_context);
     sexpr_parser_t* parser = sexpr_parser_new("(= (fac $n) (* $n (fac (- $n 1))))");
 
+    atom_t* reference_expr = expr(atom_sym("="), expr(atom_sym("fac"), atom_var("n"), 0),
+        expr(atom_sym("*"), atom_var("n"),
+            expr(atom_sym("fac"),
+                expr(atom_sym("-"), atom_var("n"), int_atom_new(1), 0),
+                0),
+            0),
+        0);
+
     atom_t* atom = sexpr_parser_parse(parser, tokenizer);
-    ck_assert(atom_eq(atom,
-                expr(atom_sym("="), expr(atom_sym("fac"), atom_var("n"), 0),
-                    expr(atom_sym("*"), atom_var("n"),
-                        expr(atom_sym("fac"),
-                            expr(atom_sym("-"), atom_var("n"), atom_gnd(int_new(1)), 0),
-                            0),
-                        0),
-                    0)));
+    ck_assert(atom_eq(atom, reference_expr));
     ck_assert(!sexpr_parser_parse(parser, tokenizer));
 
+    atom_free(reference_expr);
     atom_free(atom);
     sexpr_parser_free(parser);
     tokenizer_free(tokenizer);
@@ -35,6 +37,7 @@ START_TEST (test_tokenizer_parser)
 END_TEST
 
 void init_test(TCase* test_case) {
+    tcase_set_timeout(test_case, 300); //300s = 5min.  To test for memory leaks
     tcase_add_checked_fixture(test_case, setup, teardown);
     tcase_add_test(test_case, test_tokenizer_parser);
 }

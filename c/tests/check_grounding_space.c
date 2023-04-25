@@ -1,4 +1,6 @@
 #include <stdio.h>
+#include <stdlib.h>
+
 #include <hyperon/hyperon.h>
 
 #include "test.h"
@@ -15,20 +17,20 @@ struct output_t {
     char len;
 };
 
-void copy_to_output(char const* str, void* context) {
-    struct output_t *output = context;
-    output->len += snprintf(output->str + output->len, 1024 - output->len, "%s, ", str);
-}
-
-void query_callback_single_atom(const struct var_atom_t* atom, void* data)
+void query_callback_single_atom(const atom_t* var, const atom_t* value, void* data)
 {
     struct output_t* out = data;
 
-    out->len += snprintf(out->str + out->len, 1024 - out->len, "%s: ", atom->var);
-    atom_to_str(atom->atom, copy_to_output, out);
+    char *var_str = atom_get_name(var);
+    char *value_str = atom_to_str(value);
+
+    out->len += snprintf(out->str + out->len, 1024 - out->len, "%s: %s, ", var_str, value_str);
+
+    hyp_string_free(var_str);
+    hyp_string_free(value_str);
 }
 
-void query_callback(struct bindings_t const* results, void* data)
+void query_callback(bindings_t const* results, void* data)
 {
     struct output_t* out = data;
 
@@ -42,9 +44,13 @@ START_TEST (test_query)
     atom_t* query = expr(atom_sym("+"), atom_sym("A"), atom_var("b"), 0);
 
     struct output_t result = { "", 0 };
-    grounding_space_query(space, query, query_callback, &result);
+    bindings_set_t *results_set = grounding_space_query(space, query);
+    bindings_set_iterate(results_set, query_callback, &result);
+
     ck_assert_str_eq(result.str, "b: B, ");
 
+    bindings_set_free(results_set);
+    atom_free(query);
     grounding_space_free(space);
 }
 END_TEST
@@ -98,6 +104,7 @@ START_TEST (test_replace)
 END_TEST
 
 void init_test(TCase* test_case) {
+    tcase_set_timeout(test_case, 300); //300s = 5min.  To test for memory leaks
     tcase_add_checked_fixture(test_case, setup, teardown);
     tcase_add_test(test_case, test_query);
     tcase_add_test(test_case, test_add);

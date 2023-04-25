@@ -2,9 +2,11 @@
 name = "hyperonc"
 version = "0.1.2"
 authors = ["Vitaly Bogdanov <vsbogd@gmail.com>"]
+rust-version = "1.60.0"
 edition = "2018"
 
 [dependencies]
+safer-ffi = { version = "0.0.10", features = ["proc_macros"]}
 hyperon = { path = "../lib/" }
 regex = "1.5.4"
 log = "0.4.0"
@@ -13,4 +15,12 @@ env_logger = "0.8.4"
 [lib]
 name = "hyperonc"
 path = "src/lib.rs"
-crate-type = ["cdylib", "staticlib"]
+#crate-type = ["cdylib", "staticlib"] GOAT, get the static lib to work
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[features]
+headers = ["safer-ffi/headers"]
+
+[[bin]]
+name = "generate-headers"
+required-features = ["headers"]

@@ -1,567 +1,642 @@
+use ::safer_ffi::prelude::*;
+
 use hyperon::*;
 
-use crate::util::*;
+use std::ffi::CString;
 
 use std::os::raw::*;
 use std::fmt::Display;
-use std::convert::TryInto;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::convert::{TryInto};
 
 use hyperon::matcher::{Bindings, BindingsSet};
-use std::ptr;
 
-// Atom
+//-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-
+// Structs & Types exported to C
+//-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-
 
+#[ffi_export]
+#[derive_ReprC]
+#[repr(u8)]
+pub enum atom_type {
+    Symbol,
+    Variable,
+    Expr,
+    Grounded,
+}
+
+#[ffi_export]
+#[derive_ReprC]
+#[ReprC::opaque]
+pub struct atom {
+    pub(crate) atom: Atom,
+}
+
+/// An error / status type that may be returned from a grounded atom's execute function
+/// to provide status to the interpreter
+#[ffi_export]
+#[derive_ReprC]
+#[ReprC::opaque]
+pub struct exec_error {
+    err: ExecError,
+}
+
+/// Wraps a set of variable-value associations that are simultaneously valid and non-conflicting
+#[ffi_export]
+#[derive_ReprC]
+#[ReprC::opaque]
+pub struct bindings {
+    pub(crate) bindings: Bindings,
+}
+
+/// Wraps a set possible bindings_t objects, each representing an alternative bindings state
+#[ffi_export]
+#[derive_ReprC]
+#[ReprC::opaque]
+pub struct bindings_set {
+    pub(crate) set: BindingsSet,
+}
+
+pub(crate) type bindings_callback_t = extern "C" fn(data: *const bindings, context: *mut c_void);
+pub(crate) type atom_binding_callback_t = extern "C" fn(var: *const atom, value: *const atom, context: *mut c_void);
+pub(crate) type atoms_callback_t = extern "C" fn(atom: *const atom, context: *mut c_void);
+
+/// A table of functions to define the behavior of a grounded atom
+/// 
+/// type_
+///   Returns an atom representing the type of the grounded atom
+///   \arg payload \c is the pointer to the grounded atom's payload
+///
+/// execute
+///   Executes the grounded atom, if this field is NULL then the atom is not executable
+///   \arg payload \c is the pointer to the grounded atom's payload
+///   \arg args \c is the base pointer to a vector of atom_t pointers for the arguments
+///   \arg arg_count \c is the number of arguments
+///   \arg result_set \c is an `vec_atom` into which new result atoms may be added
+///   Returns an `exec_error_t`, or `NULL` if no error occurred
+/// 
+/// match_
+///   Matches a grounded atom with another atom
+///   \arg payload \c is the pointer to the grounded atom's payload
+///   \arg other \c is the other atom
+///   Returns a bindings_set_t representing all matches
+/// 
+/// eq
+///   Returns `true` if two grounded atoms are equal
+///   \arg payload \c is the pointer to the grounded atom's payload
+///   \arg other_payload \c is the pointer to the other grounded atom's payload
+/// 
+/// clone
+///   Returns another payload object, used to create a clone of the grounded atom
+///   \arg payload \c is the pointer to the grounded atom's payload
+/// 
+/// display
+///   Writes a text description of the grounded atom into a buffer
+///   \arg payload \c is the pointer to the grounded atom's payload
+///   \arg buffer \c is the pointer to the text buffer
+///   \arg buffer_size \c is the maximum size of the buffer allocated
+///   Returns the number of bytes written to the buffer
+/// 
+/// free
+///   Deallocates the payload buffer
+///   \arg payload \c is the pointer to the grounded atom's payload
+#[ffi_export]
+#[derive_ReprC]
 #[repr(C)]
-pub enum atom_type_t {
-    SYMBOL,
-    VARIABLE,
-    EXPR,
-    GROUNDED,
-}
-
-pub struct atom_t {
-    pub atom: Atom,
-}
-
-pub struct exec_error_t {
-    pub error: ExecError,
-}
-
-#[repr(C)]
-pub struct var_atom_t {
-    pub var: *const c_char,
-    pub atom: *mut atom_t,
-}
-
-pub struct bindings_t {
-    pub bindings: Bindings,
-}
-
-pub struct bindings_set_t {
-    set: BindingsSet,
-}
-
-pub type bindings_callback_t = lambda_t<*const bindings_t>;
-pub type bindings_mut_callback_t = lambda_t<*mut bindings_t>;
-
-#[repr(C)]
-pub struct gnd_api_t {
+//TODO: Discussion w/ Vitaly.  In some of these functions, the atom itself might be more useful than
+// the payload buffer.  For example in match_ & execute.  clone & free definitely should take the
+// payload buffer.  But type_, eq & display could be argued either way.
+pub struct gnd_api {
+    // TODO: This function needs to return multiple atoms, when the corresponding Rust API is updated
+    type_: extern "C" fn(*const c_void) -> repr_c::Box<atom>,
     // TODO: replace args by C array and ret by callback
-    // One can assign NULL to this field, it means the atom is not executable
-    execute: Option<extern "C" fn(*const gnd_t, *mut vec_atom_t, *mut vec_atom_t) -> *mut exec_error_t>,
-    match_: Option<extern "C" fn(*const gnd_t, *const atom_t, bindings_mut_callback_t, *mut c_void)>,
-    eq: extern "C" fn(*const gnd_t, *const gnd_t) -> bool,
-    clone: extern "C" fn(*const gnd_t) -> *mut gnd_t,
-    display: extern "C" fn(*const gnd_t, *mut c_char, usize) -> usize,
-    free: extern "C" fn(*mut gnd_t),
+    execute: Option<extern "C" fn(*const c_void, *const *const atom, usize, *mut vec_atom) -> Option<repr_c::Box<exec_error>>>,
+    match_: Option<extern "C" fn(*const c_void, *const atom) -> repr_c::Box<bindings_set>>,
+    eq: extern "C" fn(*const c_void, *const c_void) -> bool,
+    clone: extern "C" fn(*const c_void) -> *mut c_void,
+    //TODO.  Annoyingly, *mut c_char becomes *int8_t in the c header. Not sure what to do about it.  https://users.rust-lang.org/t/safer-ffi-question-how-to-make-c-char-into-char-rather-than-int8-t/92929
+    display: extern "C" fn(*const c_void, *mut c_char, usize) -> usize,
+    free: extern "C" fn(*mut c_void),
 }
 
-#[repr(C)]
-pub struct gnd_t {
-    api: *const gnd_api_t,
-    typ: *mut atom_t,
+//-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-
+// exec_error_t Functions
+//-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-
+
+/// Creates a new exec_error_t indicating a a runtime error.  This error will halt the interpreter
+/// and the message will be reported
+/// 
+/// The result object should be freed with exec_error_free(), if it is no longer needed
+#[ffi_export]
+pub fn exec_error_runtime(message: char_p::Ref<'_>) -> repr_c::Box<exec_error> {
+    Box::new(exec_error{err: ExecError::Runtime(message.to_string())}).into()
 }
 
-#[no_mangle]
-pub extern "C" fn exec_error_runtime(message: *const c_char) -> *mut exec_error_t {
-    Box::into_raw(Box::new(exec_error_t{ error: ExecError::Runtime(cstr_into_string(message)) }))
+/// Creates a new exec_error_t to indicate to the interpreter that the execution results should not
+/// be further reduced
+/// 
+/// The result object should be freed with exec_error_free(), if it is no longer needed
+#[ffi_export]
+pub fn exec_error_no_reduce() -> repr_c::Box<exec_error> {
+    Box::new(exec_error{err: ExecError::NoReduce}).into()
 }
 
-#[no_mangle]
-pub extern "C" fn exec_error_no_reduce() -> *mut exec_error_t {
-    Box::into_raw(Box::new(exec_error_t{ error: ExecError::NoReduce }))
+/// Frees an exec_error_t
+/// 
+/// QUESTION FOR VITALY: When will the user create an exec_error_t, that they won't pass as a return
+/// value from gnd_api->execute()?
+#[ffi_export]
+pub fn exec_error_free(err: repr_c::Box<exec_error>) {
+    drop(err)
 }
 
-#[no_mangle]
-pub extern "C" fn exec_error_free(error: *mut exec_error_t) {
-    unsafe{ drop(Box::from_raw(error)); }
+//-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-
+// bindings_t Functions
+//-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-
+
+/// Creates a new bindings_t
+/// 
+/// The result object should be freed with bindings_free()
+#[ffi_export]
+pub fn bindings_new() -> repr_c::Box<bindings> {
+    Box::new(bindings{bindings: Bindings::new()}).into()
 }
 
-// bindings
-#[no_mangle]
-pub extern "C" fn bindings_new() -> *mut bindings_t {
-    bindings_into_ptr(Bindings::new())
+/// Frees a bindings_t
+#[ffi_export]
+pub fn bindings_free(bindings: repr_c::Box<bindings>) {
+    drop(bindings)
 }
 
-#[no_mangle]
-pub extern "C" fn bindings_free(bindings: *mut bindings_t) {
-    // drop() does nothing actually, but it is used here for clarity
-    drop(unsafe{Box::from_raw(bindings)});
+/// Makes a clone of a bindings_t
+/// 
+/// The result object should be freed with bindings_free()
+#[ffi_export]
+pub fn bindings_clone(bindings: &bindings) -> repr_c::Box<bindings> {
+    Box::new(bindings{bindings: bindings.bindings.clone()}).into()
 }
 
-#[no_mangle]
-pub extern "C" fn bindings_clone(bindings: *const bindings_t) -> *mut bindings_t {
-    bindings_into_ptr(unsafe{ &(*bindings) }.bindings.clone())
+/// Creates a string description of a bindings_t
+/// 
+/// The result string should be freed with hyp_string_free()
+#[ffi_export]
+pub fn bindings_to_str(bindings: &bindings) -> char_p::Box {
+    CString::new(bindings.bindings.to_string()).unwrap().into()
 }
 
-#[no_mangle]
-pub extern "C" fn bindings_to_str(bindings: *const bindings_t, callback: c_str_callback_t, context: *mut c_void) {
-    let bindings = unsafe{ &(*bindings).bindings };
-    let s = str_as_cstr(bindings.to_string().as_str());
-    callback(s.as_ptr(), context);
+/// Compares two bindings_t objects
+#[ffi_export]
+pub fn bindings_eq(a: &bindings, b: &bindings) -> bool {
+    a.bindings == b.bindings
 }
 
-#[no_mangle]
-pub extern "C" fn bindings_eq(bindingsa: *const bindings_t, bindingsb: *const bindings_t) -> bool {
-    let left = unsafe{&(*bindingsa).bindings};
-    let right = unsafe{&(*bindingsb).bindings};
-    left == right
-}
-
-#[no_mangle]
-pub extern "C" fn bindings_traverse(cbindings: *const bindings_t, callback: lambda_t<* const var_atom_t>, context: *mut c_void) {
-    let bindings = unsafe{&(*cbindings).bindings};
-    bindings.iter().for_each(|(var, atom)|  {
-            let name = string_as_cstr(var.name());
-            let var_atom = var_atom_t {
-                var: name.as_ptr(),
-                atom: atom_into_ptr(atom)
-            };
-            callback(&var_atom, context);
+/// Iterates all bindings within a bindings_t calling the `callback` function for each
+#[ffi_export]
+pub fn bindings_traverse(bindings: &bindings, callback: atom_binding_callback_t, context: *mut c_void) {
+    bindings.bindings.iter().for_each(|(var, atom)|  {
+            let c_var_atom = atom{atom: Atom::Variable(var.clone())};
+            callback(&c_var_atom, &atom{atom: atom}, context);
         }
     )
 }
 
-#[no_mangle]
-pub extern "C" fn bindings_add_var_binding(bindings: * mut bindings_t, var_atom: *const var_atom_t) -> bool {
-    let bindings = unsafe{ &mut(*bindings).bindings };
-    let var = VariableAtom::new(cstr_into_string (unsafe{(*var_atom).var}));
-    let atom = ptr_into_atom(unsafe{(*var_atom).atom});
-    match bindings.clone().add_var_binding_v2(var, atom) {
+/// Adds a new var-value binding to a bindings_t.  Returns `true` if the binding was added sucessfully,
+/// or `false` if adding the new binding would result in a conflict with existing bindings.
+/// 
+/// This function takes ownership of the provided `var` and `value` atoms, so should NOT be
+/// subsequently freed.
+/// 
+/// The `var` arg must be a variable atom, but `value` may be any atom type.
+#[ffi_export]
+pub fn bindings_add_var_binding(bindings: &mut bindings, var: repr_c::Box<atom>, value: repr_c::Box<atom>) -> bool {
+    match bindings.bindings.clone().add_var_binding_v2(TryInto::<&VariableAtom>::try_into(&var.atom).unwrap(), &value.atom) {
         Ok(new_bindings) => {
-            *bindings = new_bindings;
+            bindings.bindings = new_bindings;
             true
         },
         Err(_) => false
     }
 }
 
-#[no_mangle]
-pub extern "C" fn bindings_is_empty(bindings: *const bindings_t) -> bool{
-    let bindings = unsafe{ &(*bindings).bindings };
-    bindings.is_empty()
+/// Returns `true` if a bindings_t contains no bindings, otherwise returns `false`
+#[ffi_export]
+pub fn bindings_is_empty(bindings: &bindings) -> bool {
+    bindings.bindings.is_empty()
 }
 
-// TODO: discuss if var_atom_t is more convenient
-//       using Option cause `extern` fn uses type `Option<atom::atom_t>`, which is not FFI-safe warning
-#[no_mangle]
-pub extern "C" fn bindings_resolve(bindings: *const bindings_t, var_name: *const c_char) -> * mut atom_t
-{
-    let bindings = unsafe{&(*bindings).bindings};
-    let var = VariableAtom::new(cstr_into_string(var_name));
-
-    match bindings.resolve(&var) {
-        None => { ptr::null_mut() }
-        Some(atom) => { atom_into_ptr(atom) }
-    }
+/// Returns an atom from a bindings_t associated with a provided variable name, or NULL if
+/// no variable binding exists
+/// 
+/// If a non-null value is returned, the returned atom must be freed with atom_free() or
+/// provided to another function that takes ownership of the atom.
+/// 
+//TODO: discuss if an atom_t is more convenient than a string
+#[ffi_export]
+pub fn bindings_resolve(bindings: &bindings, var_name: char_p::Ref<'_>) -> Option<repr_c::Box<atom>> {
+    bindings.bindings.resolve(&VariableAtom::new(var_name.to_str())).map(|atom| Box::new(atom{atom: atom}).into())
 }
 
-#[no_mangle]
-pub extern "C" fn bindings_merge(bindings_left: *const bindings_t, bindings_right: *const bindings_t) -> *mut bindings_t
-{
-    let bindings_l = unsafe{ &(*bindings_left).bindings };
-    let bindings_r = unsafe{ &(*bindings_right).bindings };
-
-    match Bindings::merge(bindings_l, bindings_r){
-        None => { ptr::null_mut() }
-        Some(merged) => { bindings_into_ptr(merged)}
-    }
+/// Merges two bindings_t objects to create a bindings_set_t
+/// 
+/// The returned object must be freed with bindings_set_free()
+#[ffi_export]
+pub fn bindings_merge(left: &bindings, right: &bindings) -> repr_c::Box<bindings_set> {    
+    let new_set = left.bindings.clone().merge_v2(&right.bindings);
+    Box::new(bindings_set{set: new_set}).into()
 }
 
-#[no_mangle]
-pub extern "C" fn bindings_merge_v2(bindings_left: *const bindings_t, bindings_right: *const bindings_t) -> *mut bindings_set_t
-{
-    let bindings_l = unsafe{ &(*bindings_left).bindings };
-    let bindings_r = unsafe{ &(*bindings_right).bindings };
-
-    let new_set = bindings_l.clone().merge_v2(bindings_r);
-    bindings_set_into_ptr(new_set)
+/// Returns an atom from a bindings_t associated with a provided variable name, or NULL if
+/// no variable binding exists.  The atom will subsequently be removed from the bindings_t.
+/// 
+/// If a non-null value is returned, the returned object must be freed with atom_free() or
+/// provided to another function that takes ownership of the atom.
+#[ffi_export]
+pub fn bindings_resolve_and_remove(bindings: &mut bindings, var_name: char_p::Ref<'_>) -> Option<repr_c::Box<atom>> {    
+    bindings.bindings.resolve_and_remove(&VariableAtom::new(var_name.to_str())).map(|atom| Box::new(atom{atom: atom}).into())
 }
 
-#[no_mangle]
-pub extern "C" fn bindings_resolve_and_remove(bindings: *mut bindings_t, var_name: *const c_char) -> *mut atom_t {
-    let bindings = unsafe{&mut(*bindings).bindings};
-    let var = VariableAtom::new(cstr_into_string(var_name));
+//-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-
+// bindings_set_t Functions
+//-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-
 
-    match bindings.resolve_and_remove(&var) {
-        None => { ptr::null_mut() }
-        Some(removed) =>{ atom_into_ptr(removed) }
-    }
+/// Returns a new bindings_set_t containing no bindings
+/// 
+/// The returned object must be freed with bindings_set_free()
+#[ffi_export]
+pub fn bindings_set_empty() -> repr_c::Box<bindings_set> {    
+    Box::new(bindings_set{set: BindingsSet::empty()}).into()
 }
 
-// end of bindings
-
-// bindings_set
-
-#[no_mangle]
-pub extern "C" fn bindings_set_empty() -> *mut bindings_set_t {
-    bindings_set_into_ptr(BindingsSet::empty())
+/// Returns a new bindings_set_t containing a single empty bindings
+/// 
+/// The returned object must be freed with bindings_set_free()
+#[ffi_export]
+pub fn bindings_set_single() -> repr_c::Box<bindings_set> {    
+    Box::new(bindings_set{set: BindingsSet::single()}).into()
 }
 
-#[no_mangle]
-pub extern "C" fn bindings_set_single() -> *mut bindings_set_t {
-    bindings_set_into_ptr(BindingsSet::single())
+/// Returns a new bindings_set_t containing the bindings from the provided bindings_t
+/// 
+/// The returned object must be freed with bindings_set_free()
+#[ffi_export]
+pub fn bindings_set_from_bindings(bindings: &bindings) -> repr_c::Box<bindings_set> {    
+    Box::new(bindings_set{set: BindingsSet::from(bindings.bindings.clone())}).into()
 }
 
-#[no_mangle]
-pub extern "C" fn bindings_set_from_bindings(bindings: *const bindings_t) -> *mut bindings_set_t {
-    let bindings = unsafe{ &(*bindings).bindings };
-    bindings_set_into_ptr(BindingsSet::from(bindings.clone()))
+/// Frees a bindings_set_t
+#[ffi_export]
+pub fn bindings_set_free(set: repr_c::Box<bindings_set>) {
+    drop(set)
 }
 
-#[no_mangle]
-pub extern "C" fn bindings_set_free(set: *mut bindings_set_t) {
-    // drop() does nothing actually, but it is used here for clarity
-    drop(unsafe{Box::from_raw(set)});
+/// Returns the number of bindings within a bindings_set_t
+#[ffi_export]
+pub fn bindings_set_len(set: &bindings_set) -> usize {    
+    set.set.len()
 }
 
-#[no_mangle]
-pub extern "C" fn bindings_set_len(set: *const bindings_set_t) -> usize {
-    let set = unsafe{ &(*set).set };
-    set.len()
-}
-
-#[no_mangle]
-pub extern "C" fn bindings_set_iterate(set: *const bindings_set_t, callback: bindings_callback_t, context: *mut c_void) {
-    let set = unsafe{ &(*set).set };
-    for bindings in set.iter() {
-        let bindings_ptr = (bindings as *const Bindings).cast::<bindings_t>();
+/// Iterates all bindings_t instances within a bindings_set_t, calling the callback function for each
+#[ffi_export]
+pub fn bindings_set_iterate(set: &bindings_set, callback: bindings_callback_t, context: *mut c_void) {
+    for bindings in set.set.iter() {
+        let bindings_ptr = (bindings as *const Bindings).cast::<bindings>();
         callback(bindings_ptr, context);
     }
 }
 
-#[no_mangle]
-pub extern "C" fn bindings_set_add_var_equality(set: *mut bindings_set_t, a: *const atom_t, b: *const atom_t) {
-    let set = unsafe{ &mut(*set).set };
-    let a = unsafe{ &(*a).atom };
-    let b = unsafe{ &(*b).atom };
-
+/// Asserts two variable atoms are equal in every bindings within a bindings_set_t
+/// 
+/// Both `a` and `b` must be variable atoms.  This function takes ownership of both atoms and
+/// therefore they should not be subsequently freed.
+#[ffi_export]
+pub fn bindings_set_add_var_equality(set: &mut bindings_set, a: repr_c::Box<atom>, b: repr_c::Box<atom>) {
     let mut owned_set = BindingsSet::empty();
-    core::mem::swap(&mut owned_set, set);
-    let mut result_set = owned_set.add_var_equality(a.try_into().unwrap(), b.try_into().unwrap());
-    core::mem::swap(&mut result_set, set);
+    core::mem::swap(&mut owned_set, &mut set.set);
+    let mut result_set = owned_set.add_var_equality((&a.atom).try_into().unwrap(), (&b.atom).try_into().unwrap());
+    core::mem::swap(&mut result_set, &mut set.set);
 }
 
-#[no_mangle]
-pub extern "C" fn bindings_set_add_var_binding(set: *mut bindings_set_t, var: *const atom_t, value: *const atom_t) {
-    let set = unsafe{ &mut(*set).set };
-    let var = unsafe{ &(*var).atom };
-    let value = unsafe{ &(*value).atom };
-
+/// Asserts two variable atoms are equal in every bindings within a bindings_set_t
+/// 
+/// If there is a conflict with any existing bindings, those bindings will be removed from the bindings_set_t
+#[ffi_export]
+pub fn bindings_set_add_var_binding(set: &mut bindings_set, var: repr_c::Box<atom>, value: repr_c::Box<atom>) {
     let mut owned_set = BindingsSet::empty();
-    core::mem::swap(&mut owned_set, set);
-    let mut result_set = owned_set.add_var_binding(TryInto::<&VariableAtom>::try_into(var).unwrap(), value);
-    core::mem::swap(&mut result_set, set);
+    core::mem::swap(&mut owned_set, &mut set.set);
+    let mut result_set = owned_set.add_var_binding(TryInto::<&VariableAtom>::try_into(&var.atom).unwrap(), &value.atom);
+    core::mem::swap(&mut result_set, &mut set.set);
 }
 
-#[no_mangle]
-pub extern "C" fn bindings_set_merge(a: *const bindings_set_t, b: *const bindings_set_t) -> *mut bindings_set_t {
-    let a = unsafe{ &(*a).set };
-    let b = unsafe{ &(*b).set };
-
-    let result_set = a.clone().merge(b);
-    bindings_set_into_ptr(result_set)
+/// Merges two bindings_set_t objects together
+/// 
+/// The returned object must be freed with bindings_set_free()
+#[ffi_export]
+pub fn bindings_set_merge(a: &bindings_set, b: &bindings_set) -> repr_c::Box<bindings_set> {
+    let result_set = a.set.clone().merge(&b.set);
+    Box::new(bindings_set{set: result_set}).into()
 }
 
-// end of bindings_set functions
+//-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-
+// atom_t Functions
+//-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-
 
-#[no_mangle]
-pub unsafe extern "C" fn atom_sym(name: *const c_char) -> *mut atom_t {
-    // cstr_as_str() keeps pointer ownership, but Atom::sym() copies resulting
-    // String into Atom::Symbol::symbol field. atom_into_ptr() moves value to the
-    // heap and gives ownership to the caller.
-    atom_into_ptr(Atom::sym(cstr_as_str(name)))
+/// Creates a new symbol atom with the given text
+/// 
+/// The returned atom must be freed with atom_free() or given to a function that assumes ownership
+#[ffi_export]
+pub fn atom_sym(name: char_p::Ref<'_>) -> repr_c::Box<atom> {
+    Box::new(atom{atom: Atom::sym(name.to_str())}).into()
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn atom_expr(children: *const *mut atom_t, size: usize) -> *mut atom_t {
-    let c_arr = std::slice::from_raw_parts(children, size);
-    let children: Vec<Atom> = c_arr.into_iter().map(|atom| {
-        ptr_into_atom(*atom)
-    }).collect();
-    atom_into_ptr(Atom::expr(children))
+/// Creates a new expression atom from the provided children.  
+/// 
+/// This function takes ownership of all children atoms, but does not the buffer containing the
+/// `children` pointers must be managed by the caller
+/// 
+/// The returned atom must be freed with atom_free() or given to a function that assumes ownership
+#[ffi_export]
+pub fn atom_expr(children: *mut repr_c::Box<atom>, size: usize) -> repr_c::Box<atom> {
+
+    // This function violates Rust conventions, hence the unsafe.  But the alternative
+    // was added runtime overhead in a commonly used function, and this calling pattern is
+    // intuitive to C programmers.
+    // If we want to get rid of the unsafe, the obvious choice is to take a vec_atom_t
+    let c_arr: &mut [repr_c::Box<atom>] = unsafe{ std::slice::from_raw_parts_mut(children, size) };
+    let children: Vec<Atom> = c_arr.into_iter().map(|atom| ptr_into_atom(atom)).collect();
+    Box::new(atom{atom: Atom::expr(children)}).into()
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn atom_var(name: *const c_char) -> *mut atom_t {
-    atom_into_ptr(Atom::var(cstr_as_str(name)))
+/// Creates a new variable atom with the given name
+/// 
+/// The returned atom must be freed with atom_free() or given to a function that assumes ownership
+#[ffi_export]
+pub fn atom_var(name: char_p::Ref<'_>) -> repr_c::Box<atom> {
+    Box::new(atom{atom: Atom::var(name.to_str())}).into()
 }
 
-#[no_mangle]
-pub extern "C" fn atom_gnd(gnd: *mut gnd_t) -> *mut atom_t {
-    atom_into_ptr(Atom::gnd(CGrounded(AtomicPtr::new(gnd))))
+/// Creates a new grounded atom with the provided api and payload
+/// 
+/// The returned atom must be freed with atom_free() or given to a function that assumes ownership
+#[ffi_export]
+pub fn atom_gnd(api: &'static gnd_api, payload: *mut c_void) -> repr_c::Box<atom> {
+    Box::new(atom{atom: Atom::gnd(CGrounded{api, payload})}).into()
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn atom_get_type(atom: *const atom_t) -> atom_type_t {
-    match (*atom).atom {
-        Atom::Symbol(_) => atom_type_t::SYMBOL,
-        Atom::Variable(_) => atom_type_t::VARIABLE,
-        Atom::Expression(_) => atom_type_t::EXPR,
-        Atom::Grounded(_) => atom_type_t::GROUNDED,
+/// Returns the type of an atom_t
+#[ffi_export]
+pub fn atom_get_type(atom: &atom) -> atom_type {
+    match atom.atom {
+        Atom::Symbol(_) => atom_type::Symbol,
+        Atom::Variable(_) => atom_type::Variable,
+        Atom::Expression(_) => atom_type::Expr,
+        Atom::Grounded(_) => atom_type::Grounded,
     }
 }
 
-#[no_mangle]
-pub extern "C" fn atom_to_str(atom: *const atom_t, callback: c_str_callback_t, context: *mut c_void) {
-    let atom = unsafe{ &(*atom).atom };
-    callback(str_as_cstr(atom.to_string().as_str()).as_ptr(), context);
+/// Returns a string description of an atom_t
+/// 
+/// The returned string must be freed with hyp_string_free()
+#[ffi_export]
+pub fn atom_to_str(atom: &atom) -> char_p::Box {
+    CString::new(atom.atom.to_string()).unwrap().into()
 }
 
-
-#[no_mangle]
-pub extern "C" fn atom_get_name(atom: *const atom_t, callback: c_str_callback_t, context: *mut c_void) {
-    let atom = unsafe{ &(*atom).atom };
-    match atom {
-        Atom::Symbol(s) => callback(str_as_cstr(s.name()).as_ptr(), context),
-        Atom::Variable(v) => callback(string_as_cstr(v.name()).as_ptr(), context),
-        _ => panic!("Only Symbol and Variable has name attribute!"),
+/// Returns the name of a symbol or variable atom
+/// 
+/// The returned string must be freed with hyp_string_free()
+#[ffi_export]
+pub fn atom_get_name(atom: &atom) -> char_p::Box {
+    match &atom.atom {
+        Atom::Symbol(s) => CString::new(s.name()).unwrap().into(),
+        Atom::Variable(v) => CString::new(v.name()).unwrap().into(),
+        _ => panic!("Only Symbol and Variable atoms have a name attribute!"),
     }
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn atom_get_object(atom: *const atom_t) -> *mut gnd_t {
-    if let Atom::Grounded(ref g) = (*atom).atom {
-        match (*g).as_any_ref().downcast_ref::<CGrounded>() {
-            Some(g) => g.get_mut_ptr(),
-            None => panic!("Returning non C grounded objects is not implemented yet!"),
+/// Returns a pointer to the payload of a grounded atom
+/// 
+/// The returned payload pointer must NOT be accessed after the atom_t has been freed or
+/// after ownership of the atom has been given to another function.
+/// 
+/// The returned payload pointer must NOT be freed.
+#[ffi_export]
+pub fn atom_get_payload(atom: &atom) -> *mut c_void {
+    if let Atom::Grounded(g) = &atom.atom {
+        match (g).as_any_ref().downcast_ref::<CGrounded>() {
+            Some(g) => g.payload,
+            None => panic!("Returning payload from non C grounded objects is not supported!"),
         }
     } else {
-        panic!("Only Grounded has object attribute!");
+        panic!("Only Grounded atoms have a payload!");
     }
 }
 
-#[no_mangle]
-pub extern "C" fn atom_get_grounded_type(atom: *const atom_t) -> *mut atom_t {
-    if let Atom::Grounded(ref g) = unsafe{ &(*atom) }.atom {
-        atom_into_ptr(g.type_())
+/// Returns an atom indicating the type of a grounded atom
+/// 
+/// The returned atom must be freed with atom_free() or given to another function that
+/// takes ownership.
+//TODO: When the Rust API changes to support multiple types, this API will need to change also
+#[ffi_export]
+pub fn atom_get_grounded_type(atom: &atom) -> repr_c::Box<atom> {
+    if let Atom::Grounded(g) = &atom.atom {
+        Box::new(atom{atom: g.type_()}).into()
     } else {
         panic!("Only Grounded atoms has grounded type attribute!");
     }
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn atom_get_children(atom: *const atom_t,
-        callback: c_atoms_callback_t, context: *mut c_void) {
-    if let Atom::Expression(ref e) = (*atom).atom {
-        return_atoms(e.children(), callback, context);
+/// Iterates all children atoms of an expression atom, calling the `callback` function for each one
+#[ffi_export]
+pub fn atom_get_children(atom: &atom, callback: atoms_callback_t, context: *mut c_void) {
+    if let Atom::Expression(e) = &atom.atom {
+        for child in e.children() {
+            callback((child as *const Atom).cast(), context);
+        }
     } else {
-        panic!("Only Expression has children!");
+        panic!("Only Expression atoms have children!");
     }
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn atom_free(atom: *mut atom_t) {
-    // drop() does nothing actually, but it is used here for clarity
-    drop(Box::from_raw(atom));
+/// Frees an atom_t
+#[ffi_export]
+pub fn atom_free(atom: repr_c::Box<atom>) {
+    drop(atom)
 }
 
-#[no_mangle]
-pub extern "C" fn atom_clone(atom: *const atom_t) -> *mut atom_t {
-    atom_into_ptr(unsafe{ &(*atom) }.atom.clone())
+/// Clones an atom_t
+/// 
+/// The returned atom must be freed with atom_free(), or it must be passed to a function
+/// that accepts ownership.
+#[ffi_export]
+pub fn atom_clone(atom: &atom) -> repr_c::Box<atom> {
+    Box::new(atom{atom: atom.atom.clone()}).into()
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn atom_eq(atoma: *const atom_t, atomb: *const atom_t) -> bool {
-    (*atoma).atom == (*atomb).atom
+/// Returns `true` if two atom_t are equal, otherwise returns `false` 
+#[ffi_export]
+pub fn atom_eq(a: &atom, b: &atom) -> bool {
+    a.atom == b.atom
 }
 
-// TODO: make a macros to generate Vec<T> definitions for C API
-pub struct vec_atom_t(Vec<Atom>);
+//-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-
+// vec_atom_t Functions & Struct
+//-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-
 
-#[no_mangle]
-pub extern "C" fn vec_atom_new() -> *mut vec_atom_t {
-    vec_atom_into_ptr(Vec::new()) 
+/// A vector of atom_t
+#[ffi_export]
+#[derive_ReprC]
+#[ReprC::opaque]
+pub struct vec_atom {
+    vec: Vec<Atom>,
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn vec_atom_free(vec: *mut vec_atom_t) {
-    drop(Box::from_raw(vec));
+/// Creates a new empty vec_atom_t
+/// 
+/// The returned object must be feed with vec_atom_free()
+#[ffi_export]
+pub fn vec_atom_new() -> repr_c::Box<vec_atom> {
+    Box::new(vec_atom{vec: Vec::new()}).into()
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn vec_atom_size(vec: *mut vec_atom_t) -> usize {
-    (*vec).0.len()
+/// Frees a vec_atom_t
+#[ffi_export]
+pub fn vec_atom_free(vec: repr_c::Box<vec_atom>) {
+    drop(vec);
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn vec_atom_pop(vec: *mut vec_atom_t) -> *mut atom_t {
-    atom_into_ptr((*vec).0.pop().expect("Vector is empty"))
+/// Pushes an atom into a vec_atom_t
+/// 
+/// This function takes ownership of the provided atom, so the atom should not be freed
+#[ffi_export]
+pub fn vec_atom_push(vec: &mut vec_atom, atom: repr_c::Box<atom>) {
+    vec.vec.push(atom.into().atom)
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn vec_atom_push(vec: *mut vec_atom_t, atom: *mut atom_t) {
-    (*vec).0.push(ptr_into_atom(atom));
+/// Removes the last atom from a vec_atom_t and returns it.  Returns NULL if the vec_atom_t is empty
+/// 
+/// The returned atom must be freed with atom_free() or given to another function that takes
+/// ownership of the atom
+#[ffi_export]
+pub fn vec_atom_pop(vec: &mut vec_atom) -> Option<repr_c::Box<atom>> {
+    let result = vec.vec.pop();
+    result.map(|atom| Box::new(atom{atom}).into())
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn vec_atom_len(vec: *const vec_atom_t) -> usize {
-    (*vec).0.len()
+/// Gets a pointer to the atom at idx within a vec_atom_t.  Returns NULL if no atom exists at idx
+/// 
+/// The returned pointer must NOT be freed, nor may to be passed to a function that accepts ownership
+/// Thr returned pointer must NOT be accessed after the vec_atom_t has been freed
+#[ffi_export]
+pub fn vec_atom_get(vec: &vec_atom, idx: usize) -> *const atom {
+    let result = vec.vec.get(idx);
+    match result {
+        Some(atom_ref) => (atom_ref as *const Atom).cast(),
+        None => std::ptr::null()
+    }
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn vec_atom_get(vec: *mut vec_atom_t, idx: usize) -> *mut atom_t {
-    atom_into_ptr((*vec).0[idx].clone())
+/// Returns the number of atoms in a vec_atom_t
+#[ffi_export]
+pub fn vec_atom_len(vec: &mut vec_atom) -> usize {
+    vec.vec.len()
 }
 
-pub type atom_array_t = array_t<*const atom_t>;
-pub type c_atoms_callback_t = lambda_t<atom_array_t>;
+//-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-
+// Internal Functions
+//-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-
 
-#[no_mangle]
-pub extern "C" fn atoms_are_equivalent(first: *const atom_t, second: *const atom_t) -> bool {
-    crate::atom::matcher::atoms_are_equivalent(&unsafe{ &*first }.atom, &unsafe{ &*second }.atom)
-}
-
-/////////////////////////////////////////////////////////////////
-// Code below is a boilerplate code to implement C API correctly.
-// It is not a part of C API.
-
-pub fn atom_into_ptr(atom: Atom) -> *mut atom_t {
-    Box::into_raw(Box::new(atom_t{ atom }))
-}
-
-pub fn bindings_into_ptr(bindings: Bindings) -> *mut bindings_t {
-    Box::into_raw(Box::new(bindings_t{bindings}))
-}
-
-pub fn ptr_into_atom(atom: *mut atom_t) -> Atom {
+/// Nasty internal function to treat a &mut as a Boxed atom and steal ownership.
+/// Used to maintain more "C-like" calling semantics of atom_expr(), but the ownership pattern
+/// of atom_expr() is a bit strange and it requires the only unsafe in this whole API.
+fn ptr_into_atom(atom: &mut atom) -> Atom {
     unsafe{ Box::from_raw(atom) }.atom
 }
 
-pub fn ptr_into_bindings(bindings: *mut bindings_t) -> Bindings {
-    unsafe {Box::from_raw(bindings)}.bindings
+//-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-
+// C Grounded Atom Wrapper
+//-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-=-+-
+
+/// Internal struct to wrap a C implementation of a GroundedAtom
+//QUESTION FOR VITALY: Originally, this type was a wrapped AtomicPtr<>, but I don't understand
+// the situation where multiple threads have shared access to this pointer
+struct CGrounded {
+    api: &'static gnd_api,
+    payload: *mut c_void,
 }
-
-pub fn bindings_set_into_ptr(set: BindingsSet) -> *mut bindings_set_t {
-    Box::into_raw(Box::new(bindings_set_t{set}))
-}
-
-fn vec_atom_into_ptr(vec: Vec<Atom>) -> *mut vec_atom_t {
-    Box::into_raw(Box::new(vec_atom_t(vec)))
-}
-
-pub fn return_atoms(atoms: &Vec<Atom>, callback: c_atoms_callback_t, context: *mut c_void) {
-    let results: Vec<*const atom_t> = atoms.iter()
-        .map(|atom| (atom as *const Atom).cast::<atom_t>()).collect();
-    callback((&results).into(), context);
-}
-
-// C grounded atom wrapper
-
-#[derive(Debug)]
-struct CGrounded(AtomicPtr<gnd_t>);
-
-impl CGrounded {
-    fn get_mut_ptr(&self) -> *mut gnd_t {
-        self.0.load(Ordering::Acquire)
-    }
-
-    fn get_ptr(&self) -> *const gnd_t {
-        self.0.load(Ordering::Acquire)
-    }
-
-    fn api(&self) -> &gnd_api_t {
-        unsafe {
-            &*(*self.get_ptr()).api
-        }
-    }
-
-    fn free(&mut self) {
-        (self.api().free)(self.get_mut_ptr());
-    }
-
-    extern "C" fn match_callback(cbindings: *mut bindings_t, context: *mut c_void) {
-        let bindings = ptr_into_bindings(cbindings);
-        let vec_bnd = unsafe{ &mut *context.cast::<Vec<Bindings>>() };
-        vec_bnd.push(bindings);
-    }
-
-}
-
 
 impl Grounded for CGrounded {
     fn type_(&self) -> Atom {
-        unsafe{ &*(*self.get_ptr()).typ }.atom.clone()
+        ((self.api.type_)(self.payload).into()).atom
     }
 
+    //QUESTION FOR VITALY: Why does the GroundedAtom::execute trait method take a &mut Vec<>, as
+    // opposed to either taking ownership or the args or just taking an immutable borrow?  My guess
+    // was that you might have intended the grounded atom interface to be able to mutate argument
+    // atoms, but looking at the implementation of interpreter::execute_op, that appears not to be
+    // the case.
+    //Also, if the idea was to mutate arguments, the results Vec<> could be redundant because
+    // newly created result atoms could just be added to the vector - which would be more appropriately
+    // thought of as a sub-space
     fn execute(&self, args: &mut Vec<Atom>) -> Result<Vec<Atom>, ExecError> {
-        let mut ret = Vec::new();
-        match self.api().execute {
+        match self.api.execute {
             Some(func) => {
-                let error = func(self.get_ptr(), (args as *mut Vec<Atom>).cast::<vec_atom_t>(),
-                (&mut ret as *mut Vec<Atom>).cast::<vec_atom_t>());
-                let ret = if error.is_null() {
-                    Ok(ret)
-                } else {
-                    let error = unsafe{ Box::from_raw(error) };
-                    Err(error.error)
+                let mut ret = vec_atom{vec: Vec::new()};
+                let arg_ptrs: Vec<*const atom> = args.iter().map(|atom| (atom as *const Atom).cast::<atom>()).collect();
+                let error = func(self.payload, arg_ptrs.as_ptr(), arg_ptrs.len(), &mut ret);
+                let ret_result = match error {
+                    None => Ok(ret.vec),
+                    Some(err) => Err(err.into().err)
                 };
-                log::trace!("CGrounded::execute: atom: {:?}, args: {:?}, ret: {:?}", self, args, ret);
-                ret
+                log::trace!("CGrounded::execute: atom: {:?}, args: {:?}, ret: {:?}", self, args, ret_result);
+                ret_result
             },
             None => execute_not_executable(self)
         }
     }
 
     fn match_(&self, other: &Atom) -> matcher::MatchResultIter {
-        match self.api().match_ {
+        match self.api.match_ {
             Some(func) => {
-                let mut results: Vec<Bindings> = Vec::new();
-                let context = (&mut results as *mut Vec<Bindings>).cast::<c_void>();
-                func(self.get_ptr(), (other as *const Atom).cast::<atom_t>(),
-                    CGrounded::match_callback, context);
-                Box::new(results.into_iter())
+                let results = func(self.payload, (other as *const Atom).cast());
+                Box::new((results.into()).set.into_iter())
             },
             None => match_by_equality(self, other)
         }
     }
 }
 
+// Two grounded atoms are the same if they have the same API, and the eq function
+// returns true on their payloads
 impl PartialEq for CGrounded {
     fn eq(&self, other: &CGrounded) -> bool {
-        (self.api().eq)(self.get_ptr(), other.get_ptr())
+        self.api as *const _ == other.api as *const _ &&
+        (self.api.eq)(self.payload, other.payload)
     }
 }
 
 impl Clone for CGrounded {
     fn clone(&self) -> Self {
-        CGrounded(AtomicPtr::new((self.api().clone)(self.get_ptr())))
+        let new_payload = (self.api.clone)(self.payload);
+        CGrounded{api: self.api, payload: new_payload}
+    }
+}
+
+impl core::fmt::Debug for CGrounded {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{self}")
     }
 }
 
 impl Display for CGrounded {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut buffer = [0u8; 4096];
-        (self.api().display)(self.get_ptr(), buffer.as_mut_ptr().cast::<c_char>(), 4096);
-        let text = cstr_into_string(buffer.as_ptr().cast::<c_char>());
+        let bytes_written = (self.api.display)(self.payload, buffer.as_mut_ptr().cast(), 4096);
+        let text = std::str::from_utf8(&buffer[0..bytes_written]).expect("Incorrect UTF-8 sequence");
         write!(f, "{}", text)
     }
 }
 
 impl Drop for CGrounded {
     fn drop(&mut self) {
-        self.free();
+        (self.api.free)(self.payload);
     }
-}
-
-#[cfg(test)]
-mod tests {
-use super::*;
-use std::ptr;
-
-    #[test]
-    pub fn test_match_callback() {
-
-        let cbindings = bindings_into_ptr(bind!{var: expr!("atom_test")} );
-
-        let mut results: Vec<Bindings> = Vec::new();
-        let context = ptr::addr_of_mut!(results).cast::<c_void>();
-
-        CGrounded::match_callback( cbindings, context);
-
-        assert_eq!(results, vec![Bindings::from(vec![
-                (VariableAtom::new("var"), Atom::sym("atom_test"))])]);
-    }
-
 }

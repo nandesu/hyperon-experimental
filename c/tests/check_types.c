@@ -1,3 +1,6 @@
+
+#include <stdlib.h>
+
 #include <hyperon/hyperon.h>
 
 #include "test.h"
@@ -17,11 +20,14 @@ START_TEST (test_check_type)
     atom_t* verb = atom_sym("Verb");
 
     atom_t* nonsense = atom_sym("nonsense");
-    ck_assert(check_type(space, nonsense, ATOM_TYPE_UNDEFINED()));
+    atom_t* undefined = METTA_TYPE_UNDEFINED();
+    ck_assert(check_type(space, nonsense, undefined));
     ck_assert(check_type(space, nonsense, verb));
     atom_free(nonsense);
+    atom_free(undefined);
 
     atom_free(verb);
+    grounding_space_free(space);
 }
 END_TEST
 
@@ -35,31 +41,30 @@ START_TEST (test_validate_atom)
     atom_t* foo = expr(atom_sym("foo"), atom_sym("a"), 0);
     ck_assert(validate_atom(space, foo));
     atom_free(foo);
+    grounding_space_free(space);
 }
 END_TEST
 
-typedef struct _atoms_t {
-    atom_t** items;
-    size_t size;
-} atoms_t;
+void collect_atom(atom_t const* atom, void* context) {
+    vec_atom_t* vec = context;
+    vec_atom_push(vec, atom_clone(atom));
+}
 
-void check_atoms(atom_array_t act_atoms, void* context) {
+void check_atoms(vec_atom_t *act_atoms, atom_t const** exp_atoms) {
     int i = 0;
-    atom_t const** exp_atoms = context;
-
-    while (i < act_atoms.size && exp_atoms[i]) {
+    while (i < vec_atom_len(act_atoms) && exp_atoms[i]) {
         atom_t const* expected = exp_atoms[i];
-        atom_t const* actual = act_atoms.items[i];
-        char* expected_str = stratom(expected);
-        char* actual_str = stratom(actual);
+        atom_t const* actual = vec_atom_get(act_atoms, i);
+        char* expected_str = atom_to_str(expected);
+        char* actual_str = atom_to_str(actual);
         ck_assert_msg(atom_eq(expected, actual),
                 "expected atom [%u]: '%s', is not equal to actual atom [%u]: '%s'",
                 i, expected_str, i, actual_str);
-        free(expected_str);
-        free(actual_str);
+        hyp_string_free(expected_str);
+        hyp_string_free(actual_str);
         ++i;
     }
-    ck_assert_msg(i == act_atoms.size && !exp_atoms[i], "actual size: %lu, expected size: %u", act_atoms.size, i);
+    ck_assert_msg(i == vec_atom_len(act_atoms) && !exp_atoms[i], "actual size: %lu, expected size: %u", vec_atom_len(act_atoms), i);
 }
 
 START_TEST (test_get_atom_types)
@@ -76,21 +81,34 @@ START_TEST (test_get_atom_types)
     atom_t* call_a_b = expr(atom_sym("a"), atom_sym("b"), 0);
 
     atom_t const* call_a_c_types[] = { D, 0 };
-    get_atom_types(space, call_a_c, &check_atoms, &call_a_c_types);
+    vec_atom_t* returned_atoms = vec_atom_new();
+    get_atom_types(space, call_a_c, &collect_atom, returned_atoms);
+    check_atoms(returned_atoms, call_a_c_types);
+    vec_atom_free(returned_atoms);
+
     atom_t const* call_a_b_types[] = { 0 };
-    get_atom_types(space, call_a_b, &check_atoms, &call_a_b_types);
+    returned_atoms = vec_atom_new();
+    get_atom_types(space, call_a_b, &collect_atom, returned_atoms);
+    check_atoms(returned_atoms, call_a_b_types);
+    vec_atom_free(returned_atoms);
+
     atom_t const* a_types[] = { a_type, 0 };
-    get_atom_types(space, a, &check_atoms, &a_types);
+    returned_atoms = vec_atom_new();
+    get_atom_types(space, a, &collect_atom, returned_atoms);
+    check_atoms(returned_atoms, a_types);
+    vec_atom_free(returned_atoms);
 
     atom_free(call_a_b);
     atom_free(call_a_c);
     atom_free(a_type);
     atom_free(a);
     atom_free(D);
+    grounding_space_free(space);
 }
 END_TEST
 
 void init_test(TCase* test_case) {
+    tcase_set_timeout(test_case, 300); //300s = 5min.  To test for memory leaks
     tcase_add_checked_fixture(test_case, setup, teardown);
     tcase_add_test(test_case, test_check_type);
     tcase_add_test(test_case, test_validate_atom);
