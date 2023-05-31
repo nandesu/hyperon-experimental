@@ -22,7 +22,7 @@ fn natural_language_expressions(bencher: &mut Bencher) -> std::io::Result<()> {
 
     //The complete works of Shakespeare can be downloaded as a single file here:
     // https://ocw.mit.edu/ans7870/6/6.006/s08/lecturenotes/files/t8.shakespeare.txt
-    // ~125k expressions
+    // ~200k expressions
     // ~900k words
     let file = File::open("/Users/admin/Desktop/t8.shakespeare.txt")?;
 
@@ -30,6 +30,7 @@ fn natural_language_expressions(bencher: &mut Bencher) -> std::io::Result<()> {
     let mut reader = BufReader::new(file);
     let mut line = String::new();
     let mut cur_symbols = vec![];
+    let mut expr_count = 0;
     while reader.read_line(&mut line)? > 0 {
 
         const TERMINATORS: &[char] = &[',', '.', ';', '?', '\"', '-', '[', ']'];
@@ -49,13 +50,15 @@ fn natural_language_expressions(bencher: &mut Bencher) -> std::io::Result<()> {
                     let expr = Atom::expr(&cur_symbols[..]);
                     cur_symbols = vec![];
                     space.add(expr);
+                    expr_count += 1;
                 }
             }
         }
-
         line.clear();
     }
+    println!("expr_count = {expr_count}");
 
+    // Coriolanus, Act 1, Scene 1.
     let query_expr_1 = &expr!(A B C "singularity");
     let reference_binding_1 = bind_set![{ A: sym!("More"), B: sym!("than"), C: Atom::sym("his") }];
 
