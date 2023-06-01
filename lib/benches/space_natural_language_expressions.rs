@@ -12,7 +12,6 @@ use std::io::BufReader;
 use hyperon::*;
 use hyperon::space::grounding::*;
 
-
 //Specify the test file path to run this benchmark
 #[ignore]
 #[bench]
@@ -29,7 +28,7 @@ fn natural_language_expressions(bencher: &mut Bencher) -> std::io::Result<()> {
     //Parse the file, with each sentence clause as an expression
     let mut reader = BufReader::new(file);
     let mut line = String::new();
-    let mut cur_symbols = vec![];
+    let mut cur_symbols = vec![sym!("Sentence")];
     let mut expr_count = 0;
     while reader.read_line(&mut line)? > 0 {
 
@@ -48,7 +47,7 @@ fn natural_language_expressions(bencher: &mut Bencher) -> std::io::Result<()> {
                 }
                 if end {
                     let expr = Atom::expr(&cur_symbols[..]);
-                    cur_symbols = vec![];
+                    cur_symbols = vec![sym!("Sentence")];
                     space.add(expr);
                     expr_count += 1;
                 }
@@ -58,13 +57,20 @@ fn natural_language_expressions(bencher: &mut Bencher) -> std::io::Result<()> {
     }
     println!("expr_count = {expr_count}");
 
-    // Coriolanus, Act 1, Scene 1.
-    let query_expr_1 = &expr!(A B C "singularity");
-    let reference_binding_1 = bind_set![{ A: sym!("More"), B: sym!("than"), C: Atom::sym("his") }];
+    // // Coriolanus, Act 1, Scene 1. (postfix)
+    // let query_expr_1 = &expr!("Sentence" A B C "singularity");
+    // let reference_binding_1 = bind_set![{ A: sym!("More"), B: sym!("than"), C: Atom::sym("his") }];
+
+    // Coriolanus, Act 1, Scene 1. (prefix)
+    let query_expr_2 = &expr!("Sentence" "More" B C "singularity");
+    let reference_binding_2 = bind_set![{ B: sym!("than"), C: Atom::sym("his") }];
+
+    // // Matches 21 Different Expressions
+    // let query_expr_3 = &expr!("Sentence" "More" B C D);
 
     bencher.iter(|| {
-        let result_binding = black_box(space.query(query_expr_1));
-        assert_eq!(result_binding, reference_binding_1);
+        let result_binding = black_box(space.query(query_expr_2));
+        assert_eq!(result_binding, reference_binding_2);
     });
 
     Ok(())
