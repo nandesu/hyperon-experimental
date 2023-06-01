@@ -5,6 +5,8 @@ extern crate test;
 
 use test::{Bencher, black_box};
 
+use std::time::{Instant};
+
 use std::fs::File;
 use std::io::prelude::*;
 use std::io::BufReader;
@@ -30,6 +32,7 @@ fn natural_language_expressions(bencher: &mut Bencher) -> std::io::Result<()> {
     let mut line = String::new();
     let mut cur_symbols = vec![sym!("Sentence")];
     let mut expr_count = 0;
+    let start = Instant::now();
     while reader.read_line(&mut line)? > 0 {
 
         const TERMINATORS: &[char] = &[',', '.', ';', '?', '\"', '-', '[', ']'];
@@ -55,7 +58,14 @@ fn natural_language_expressions(bencher: &mut Bencher) -> std::io::Result<()> {
         }
         line.clear();
     }
+
+    //Space-building Stats.  Run with `cargo bench -- --nocapture` to see the results
+    //NOTE: The time taken to parse the file is currently a tiny fraction compared with adding the expression
+    // to the space.  But if this changes in the future this part of the benchmark will become unreliable.
     println!("expr_count = {expr_count}");
+    let end = Instant::now();
+    let elapsed = end - start;
+    println!("time elapsed building space: {:.3} seconds, {:.3} µs/expr", (elapsed.as_millis() as f64 / 1000.00), (elapsed.as_nanos() as f64/expr_count as f64/1000.00));
 
     // // Coriolanus, Act 1, Scene 1. (postfix)
     // let query_expr_1 = &expr!("Sentence" A B C "singularity");

@@ -5,6 +5,8 @@ extern crate test;
 
 use test::{Bencher, black_box};
 
+use std::time::{Instant};
+
 use std::fs::File;
 use std::io::BufReader;
 
@@ -97,6 +99,7 @@ fn database_record_expressions(bencher: &mut Bencher) -> std::io::Result<()> {
 
     let mut expr_count = 0;
     let mut tsv_record_count = 0;
+    let start = Instant::now();
     for geoname in tsv_parser.deserialize::<GeoName>().map(|result| result.unwrap()) {
         tsv_record_count += 1;
 
@@ -115,8 +118,15 @@ fn database_record_expressions(bencher: &mut Bencher) -> std::io::Result<()> {
             expr_count += 1;
         }
     }
+
+    //Space-building Stats.  Run with `cargo bench -- --nocapture` to see the results
+    //NOTE: The time taken to parse the file is currently a tiny fraction compared with adding the expression
+    // to the space.  But if this changes in the future this part of the benchmark will become unreliable.
     println!("tsv_record_count = {tsv_record_count}");
     println!("expr_count = {expr_count}");
+    let end = Instant::now();
+    let elapsed = end - start;
+    println!("time elapsed building space: {:.3} seconds, {:.3} µs/expr", (elapsed.as_millis() as f64 / 1000.00), (elapsed.as_nanos() as f64/expr_count as f64/1000.00));
 
     let query_expr_1 = &expr!("geoname" Name AsciiName "Tokyo" Lat Lon FeatureClass FetureCode CountryCode CC2 Admin1 Admin2 Admin3 Admin4 Pop Elev Dem TZ ModDate);
     let reference_binding_1 = bind_set![{ Name: sym!("Tokyo"), AsciiName: sym!("Tokyo"),
