@@ -1,4 +1,4 @@
-![CI](https://github.com/trueagi-io/hyperon-experimental/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/trueagi-io/hyperon-experimental/actions/workflows/ci-auto.yml/badge.svg)
 
 # Overview
 
@@ -50,7 +50,7 @@ Rust (see the Notes at the installation page).
   * Python3 and Python3-dev (3.7 or later)
   * Pip (23.1.2 or later)
   * GCC (7.5 or later)
-  * CMake (3.10 or later)
+  * CMake (3.15 or later)
 
 * Install cbindgen:
 ```
@@ -59,7 +59,7 @@ cargo install --force cbindgen
 
 * Install Conan and make default Conan profile:
 ```
-python3 -m pip install conan==1.60.1
+python3 -m pip install conan==1.60.2
 conan profile new --detect default
 ```
 
@@ -136,6 +136,37 @@ One can run MeTTa script from command line:
 ```
 metta ./tests/scripts/<name>.metta
 ```
+
+### Logger
+
+You can enable logging by prefixing the `metta` command line by
+
+```
+RUST_LOG=hyperon[::COMPONENT]*=LEVEL
+```
+
+where
+- `[::COMPONENT]*` is a, possibly empty, sequence of modules and
+  submodules of hyperon, such as `::metta`, `::metta::runner`,
+  `::common`, `::common::multitrie`, etc.
+- `LEVEL` is the log level.  Possible log levels are: `error`, `warn`,
+  `info`, `debug` and `trace`.
+
+For example, to log all hyperon messages at the `debug` level and
+below, while running `script.metta`, you may type:
+
+```
+RUST_LOG=hyperon=debug metta script.metta
+```
+
+Or, to log all hyperon messages at the `trace` level and below,
+restricted to module `metta` and submodule `types`, you may type:
+
+```
+RUST_LOG=hyperon::metta::types=trace metta script.metta
+```
+
+By default all log messages are directed to stderr.
 
 ## Troubleshooting
 

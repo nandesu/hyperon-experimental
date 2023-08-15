@@ -345,7 +345,7 @@ pub trait GroundedAtom : mopa::Any + Debug + Display {
     // TODO: type_() could return Vec<&Atom> as anyway each atom should be replaced
     // by its alpha equivalent with unique variables
     fn type_(&self) -> Atom;
-    fn execute(&self, args: &mut Vec<Atom>) -> Result<Vec<Atom>, ExecError>;
+    fn execute(&self, args: &[Atom]) -> Result<Vec<Atom>, ExecError>;
     fn match_(&self, other: &Atom) -> matcher::MatchResultIter;
 }
 
@@ -373,7 +373,7 @@ mopafy!(GroundedAtom);
 ///         rust_type_atom::<MyGrounded>()
 ///     }
 ///
-///     fn execute(&self, args: &mut Vec<Atom>) -> Result<Vec<Atom>, ExecError> {
+///     fn execute(&self, args: &[Atom]) -> Result<Vec<Atom>, ExecError> {
 ///         execute_not_executable(self)
 ///     }
 ///
@@ -408,7 +408,7 @@ pub trait Grounded : Display {
 
     /// Executes grounded function on passed `args` and returns list of
     /// results as `Vec<Atom>` or [ExecError].
-    fn execute(&self, args: &mut Vec<Atom>) -> Result<Vec<Atom>, ExecError>;
+    fn execute(&self, args: &[Atom]) -> Result<Vec<Atom>, ExecError>;
 
     /// Implements custom matching logic of the grounded atom.
     /// Gets `other` atom as input, returns the iterator of the
@@ -477,7 +477,7 @@ impl<T: AutoGroundedType> GroundedAtom for AutoGroundedAtom<T> {
         rust_type_atom::<T>()
     }
 
-    fn execute(&self, _args: &mut Vec<Atom>) -> Result<Vec<Atom>, ExecError> {
+    fn execute(&self, _args: &[Atom]) -> Result<Vec<Atom>, ExecError> {
         execute_not_executable(self)
     }
 
@@ -527,7 +527,7 @@ impl<T: CustomGroundedType> GroundedAtom for CustomGroundedAtom<T> {
         Grounded::type_(&self.0)
     }
 
-    fn execute(&self, args: &mut Vec<Atom>) -> Result<Vec<Atom>, ExecError> {
+    fn execute(&self, args: &[Atom]) -> Result<Vec<Atom>, ExecError> {
         Grounded::execute(&self.0, args)
     }
 
@@ -810,7 +810,30 @@ impl<'a> TryFrom<&'a Atom> for &'a ExpressionAtom {
     fn try_from(atom: &Atom) -> Result<&ExpressionAtom, &'static str> {
         match atom {
             Atom::Expression(expr) => Ok(&expr),
-            _ => Err("Atom is not a ExpressionAtom")
+            _ => Err("Atom is not an ExpressionAtom")
+        }
+    }
+}
+
+impl<const N: usize> TryFrom<Atom> for [Atom; N] {
+    type Error = &'static str;
+    fn try_from(atom: Atom) -> Result<[Atom; N], &'static str> {
+        match atom {
+            Atom::Expression(expr) => {
+                <[Atom; N]>::try_from(expr.into_children())
+                    .map_err(|_| concat!("ExpressionAtom length is not equal to expected"))
+            },
+            _ => Err("Atom is not an ExpressionAtom")
+        }
+    }
+}
+
+impl<'a> TryFrom<&'a Atom> for &'a [Atom] {
+    type Error = &'static str;
+    fn try_from(atom: &Atom) -> Result<&[Atom], &'static str> {
+        match atom {
+            Atom::Expression(expr) => Ok(expr.children().as_slice()),
+            _ => Err("Atom is not an ExpressionAtom")
         }
     }
 }
@@ -895,7 +918,7 @@ mod test {
         fn type_(&self) -> Atom {
             Atom::sym("Integer")
         }
-        fn execute(&self, _args: &mut Vec<Atom>) -> Result<Vec<Atom>, ExecError> {
+        fn execute(&self, _args: &[Atom]) -> Result<Vec<Atom>, ExecError> {
             execute_not_executable(self)
         }
         fn match_(&self, other: &Atom) -> matcher::MatchResultIter {
@@ -916,7 +939,7 @@ mod test {
         fn type_(&self) -> Atom {
             expr!("->" "i32" "i32")
         }
-        fn execute(&self, args: &mut Vec<Atom>) -> Result<Vec<Atom>, ExecError> {
+        fn execute(&self, args: &[Atom]) -> Result<Vec<Atom>, ExecError> {
             Ok(vec![Atom::value(self.0 * args.get(0).unwrap().as_gnd::<i32>().unwrap())])
         }
         fn match_(&self, other: &Atom) -> matcher::MatchResultIter {
@@ -1048,6 +1071,24 @@ mod test {
         } else {
             assert!(false, "GroundedAtom is expected");
         }
+    }
+
+    #[test]
+    fn test_array_try_from_expression_atom() {
+        assert_eq!(<[Atom; 2]>::try_from(expr!("A" "B")),
+            Ok([sym!("A"), sym!("B")]));
+        assert_eq!(<[Atom; 1]>::try_from(sym!("A")),
+            Err("Atom is not an ExpressionAtom"));
+        assert_eq!(<[Atom; 2]>::try_from(expr!("A" "B" "C")),
+            Err("ExpressionAtom length is not equal to expected"));
+    }
+
+    #[test]
+    fn test_slice_try_from_expression_atom() {
+        assert_eq!(<&[Atom]>::try_from(&expr!("A" "B" "C")),
+            Ok([sym!("A"), sym!("B"), sym!("C")].as_slice()));
+        assert_eq!(<&[Atom]>::try_from(&sym!("A")),
+            Err("Atom is not an ExpressionAtom"));
     }
 
 }

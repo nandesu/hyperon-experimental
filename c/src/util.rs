@@ -1,25 +1,10 @@
 use core::slice;
 use std::io::{Cursor, Write};
-use std::ffi::c_void;
 use std::ffi::CString;
 use std::os::raw::c_char;
 use std::ffi::CStr;
 use hyperon::common::shared::Shared;
 use std::ops::{Deref, DerefMut};
-
-#[repr(C)]
-pub struct array_t<T> {
-    pub items: *const T,
-    pub size: usize,
-}
-
-impl<T> From<&Vec<T>> for array_t<T> {
-    fn from(vec: &Vec<T>) -> Self {
-        Self{ items: vec.as_ptr(), size: vec.len() }
-    }
-}
-
-pub type lambda_t<T> = extern "C" fn(data: T, context: *mut c_void);
 
 pub fn cstr_as_str<'a>(s: *const c_char) -> &'a str {
     unsafe{ CStr::from_ptr(s) }.to_str().expect("Incorrect UTF-8 sequence")

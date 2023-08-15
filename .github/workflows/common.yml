@@ -1,5 +1,4 @@
-# This reusable workflow builds the project, tests it, optionally makes
-# distribution packages and publishes them as part of GitHub release.
+# This reusable workflow builds the project and tests it.
 
 # This workflow uses actions that are not certified by GitHub.  They are
 # provided by a third-party and are governed by separate terms of service,
@@ -20,25 +19,11 @@ on:
         default: ubuntu-20.04
         required: false
         type: string
-      make-packages:
-        description: 'Flag to make packages'
-        default: false
-        required: false
-        type: boolean
-      publish:
-        description: 'Flag to publish packages'
-        default: false
-        required: false
-        type: boolean
-      release-tag:
-        description: 'GitHub release tag to publish packages'
+      cmake-version:
+        description: 'CMake version to use'
+        default: 3.16.x
         required: false
         type: string
-      prerelease:
-        description: 'Flag to create a pre-release'
-        default: true
-        required: false
-        type: boolean
 
 jobs:
   run:
@@ -54,22 +39,16 @@ jobs:
             toolchain: stable
             override: true
 
-      - name: Build and test
+      - name: Build Rust library
         working-directory: ./lib
         run: |
           cargo check
           cargo build
+
+      - name: Test Rust library
+        working-directory: ./lib
+        run: |
           RUST_LOG=hyperon=debug cargo test
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: ${{ inputs.python-version }}
-
-      - name: Install Conan
-        uses: turtlebrowser/get-conan@v1.2
-        with:
-          version: 1.60.1
 
       - name: Install cbindgen
         uses: actions-rs/cargo@v1.0.1
@@ -77,9 +56,46 @@ jobs:
           command: install
           args: cbindgen
 
-      - name: Setup C API build
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Install CMake
+        uses: jwlawson/actions-setup-cmake@v1.14.1
+        with:
+          cmake-version: ${{ inputs.cmake-version }}
+
+      - name: Install Conan
+        uses: turtlebrowser/get-conan@v1.2
+        with:
+          version: 1.60.2
+
+      - name: Setup Conan profile
         run: |
           conan profile new --detect default
+
+      - name: Print environment
+        run: |
+          echo "rustc --version"
+          rustc --version
+          echo "cbindgen --version"
+          cbindgen --version
+          echo "python --version"
+          python --version
+          echo "conan --version"
+          conan --version
+          echo "conan profile show default"
+          conan profile show default
+          echo "gcc --version"
+          gcc --version
+          echo "cmake --version"
+          cmake --version
+          echo "make --version"
+          make --version
+
+      - name: Setup C API build
+        run: |
           mkdir -p build
           cd build
           # specify C compiler as conan could not find it automatically
@@ -93,21 +109,3 @@ jobs:
       - name: Test C API
         working-directory: ./build
         run: make check
-
-      - name: Build Python package
-        if: inputs.make-packages
-        working-directory: ./python
-        run: |
-          python -m pip install build==0.10.0
-          python -m build --wheel
-
-      - name: Publish artifacts on GitHub
-        if: inputs.publish
-        uses: svenstaro/upload-release-action@v2
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: ./python/dist/*.whl
-          tag: ${{ inputs.release-tag }}
-          prerelease: ${{ inputs.prerelease }}
-          overwrite: true
-          file_glob: true
