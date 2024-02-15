@@ -166,8 +166,12 @@ START_TEST (test_custom_module_format)
     metta_t runner = metta_new_with_space_environment_and_stdlib(&space, env_builder, NULL, NULL);
     space_free(space);
 
+    printf("TEST - about-to-import\n\n");
+
     //Load a module using our custom format, and verify it was loaded sucessfully
     ck_assert(run_metta_and_compare_result(&runner, "!(import! ctest-mod loaded-test)", "()"));
+
+    printf("TEST - about to match\n\n");
 
     //Test that we can match an atom in the module loaded with the custom format
     ck_assert(run_metta_and_compare_result(&runner, "!(match &loaded-test test-atom found!)", "found!"));
