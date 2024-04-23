@@ -25,11 +25,13 @@ if test "$AUDITWHEEL_POLICY" = "manylinux2014"; then
     yum install -y python3 perl-devel openssl-devel pkgconfig
 fi
 
+echo "Phase 1: Cargo install cbindgen"
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs > /tmp/rustup.sh
 sh /tmp/rustup.sh -y && rm /tmp/rustup.sh
 export PATH="${PATH}:${HOME}/.cargo/bin"
 cargo install cbindgen
 
+echo "Phase 2: Python -- Conan and pip23.1.2"
 python3 -m venv ${HOME}/.local/pyvenv
 source ${HOME}/.local/pyvenv/bin/activate
 python3 -m pip install conan==1.62 pip==23.1.2
@@ -44,6 +46,14 @@ git remote add origin $HYPERONC_URL
 git fetch --depth=1 origin $HYPERONC_REV
 git reset --hard FETCH_HEAD
 
+mkdir -p ${HOME}/hyperonc/build
+cd ${HOME}/hyperonc/build
+# Rust doesn't support building shared libraries under musllinux environment
+cmake -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release ..
+make
+make check
+
+echo "Phase 3: Build, check and install the Relase."
 mkdir -p ${HOME}/hyperonc/c/build
 cd ${HOME}/hyperonc/c/build
 # Rust doesn't support building shared libraries under musllinux environment
