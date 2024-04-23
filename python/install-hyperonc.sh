@@ -1,7 +1,7 @@
 #!/bin/sh
 
-HYPERONC_URL=https://github.com/trueagi-io/hyperon-experimental.git
-HYPERONC_REV=main
+HYPERONC_URL=https://github.com/nandesu/hyperon-experimental.git
+HYPERONC_REV=modules
 while getopts 'u:r:' opt; do
     case "$opt" in
         u)
@@ -22,7 +22,7 @@ echo "hyperonc revision $HYPERONC_REV"
 
 # This is to build subunit from Conan on CentOS based manylinux images.
 if test "$AUDITWHEEL_POLICY" = "manylinux2014"; then
-    yum install -y perl-devel
+    yum install -y python3 perl-devel openssl-devel pkgconfig
 fi
 
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs > /tmp/rustup.sh
@@ -30,9 +30,12 @@ sh /tmp/rustup.sh -y && rm /tmp/rustup.sh
 export PATH="${PATH}:${HOME}/.cargo/bin"
 cargo install cbindgen
 
+python3 -m venv ${HOME}/.local/pyvenv
+source ${HOME}/.local/pyvenv/bin/activate
 python3 -m pip install conan==1.62 pip==23.1.2
-PATH="${PATH}:${HOME}/.local/bin"
+PATH="${PATH}:${HOME}/.local/bin:${HOME}/.local/pyvenv"
 conan profile new --detect default
+source ${HOME}/.local/pyvenv/bin/activate
 
 mkdir -p ${HOME}/hyperonc
 cd ${HOME}/hyperonc
